@@ -152,6 +152,7 @@ class gpToolbox:
         X = X[i]
         Y = Y[i]
 
+        # the next 3 lines are my personal modification. Increased robustness to my data...
         i = np.where(Y>0)
         X = X[i].astype(float)
         Y = Y[i].astype(float)
@@ -172,4 +173,68 @@ class gpToolbox:
         popt,pcov = curve_fit(gpToolbox.Gaussian_5_parameters,X,Y,p0=[offs0,slope,ampl,mu0,sigma0])
         return popt,pcov
     
+
+    @staticmethod        
+    # thanks to the mitical Guido. Modified the linspace part
+    def computeTransverseEmittance(WS_position_um,
+                                   WS_profile_arb_unit,
+                                   off_momentum_distribution_arb_unit,
+                                   deltaP_P,
+                                   betaGammaRelativistic,
+                                   betaOptical_m,
+                                   Dispersion_m):
+
+        x_inj=WS_position_um/1000;
+        y_inj=WS_profile_arb_unit;
+        
+        
+        popt,pcov = gpToolbox.makeGaussianFit_5_parameters(x_inj,y_inj)
+        y_inj_1=gpToolbox.Gaussian_5_parameters(x_inj,popt[0],popt[1],popt[2],popt[3],popt[4])
+        y_inj_2=y_inj-popt[0]-popt[1]*x_inj
+        x_inj_2=x_inj-popt[3]
+        
+        # define a reasonable range for the interpolation
+        limit = 5 * popt[4]
+        #print limit 
+        x_inj_3=np.linspace(-limit,limit,1000)
+        # uncomment for hardcoded range
+        #x_inj_3=np.linspace(-40,40,1000);
+
+        y_inj_3=scipy.interpolate.interp1d(x_inj_2,y_inj_2)(x_inj_3)
+        y_inj_4=y_inj_3/np.trapz(y_inj_3,x_inj_3)
+        y_inj_5=(y_inj_4+y_inj_4[::-1])/2
+
+        WS_profile_step1_5GaussianFit=y_inj_1
+        WS_profile_step2_dropping_baseline=y_inj_2
+        WS_profile_step3_interpolation=y_inj_3
+        WS_profile_step4_normalization=y_inj_4
+        WS_profile_step5_symmetric=y_inj_5
+        WS_position_step1_centering_mm=x_inj_2;
+        WS_position_step2_interpolation_mm=x_inj_3;
+        Dispersion_mm=Dispersion_m*1000
+
+        Dispersive_position_step1_mm=deltaP_P*Dispersion_mm
+        Dispersive_profile_step1_normalized=off_momentum_distribution_arb_unit/np.trapz(off_momentum_distribution_arb_unit,Dispersive_position_step1_mm)
+        Dispersive_position_step2_mm=WS_position_step2_interpolation_mm
+        Dispersive_step2_interpolation=scipy.interpolate.interp1d(Dispersive_position_step1_mm,Dispersive_profile_step1_normalized,bounds_error=0,fill_value=0)(Dispersive_position_step2_mm)
+        Dispersive_step3_symmetric=(Dispersive_step2_interpolation+Dispersive_step2_interpolation[::-1])/2
+
+        def myConvolution(WS_position_step2_interpolation_mm,sigma):
+            myConv=np.convolve(Dispersive_step3_symmetric, gpToolbox.Gaussian(WS_position_step2_interpolation_mm,1,0,sigma), 'same')
+            myConv/=np.trapz(myConv,WS_position_step2_interpolation_mm)
+            return myConv
+
+        def myError(sigma):
+            myConv=np.convolve(Dispersive_step3_symmetric, gpToolbox.Gaussian(WS_position_step2_interpolation_mm,1,0,sigma), 'same')
+            myConv/=np.trapz(myConv,WS_position_step2_interpolation_mm)
+            aux=myConv-WS_profile_step5_symmetric
+            return np.std(aux), aux, myConv
+
+        popt,pcov = curve_fit(myConvolution,WS_position_step2_interpolation_mm,WS_profile_step5_symmetric,p0=[1])
+        sigma=popt;
+        emittance=sigma**2/betaOptical_m*betaGammaRelativistic
+        return {'emittance_um':emittance,'sigma_mm':sigma,'WS_position_mm':WS_position_step2_interpolation_mm, 'WS_profile': WS_profile_step5_symmetric, 'Dispersive_position_mm':Dispersive_position_step2_mm, 'Dispersive_profile':Dispersive_step3_symmetric,
+               'convolutionBackComputed':myConvolution(WS_position_step2_interpolation_mm,sigma),
+               'betatronicProfile':gpToolbox.Gaussian(WS_position_step2_interpolation_mm,1,0,sigma)
+               }
 
